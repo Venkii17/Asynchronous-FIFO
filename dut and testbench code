@@ -1,0 +1,500 @@
+..............................dut................................
+
+module async_fifo #(
+    parameter DATA_WIDTH = 8,
+    parameter ADDR_WIDTH = 3
+)(
+    input  logic                  wr_clk,
+    input  logic                  rd_clk,
+
+    input  logic                  wr_rst_n,
+    input  logic                  rd_rst_n,
+
+    input  logic                  wr_en,
+    input  logic                  rd_en,
+
+    input  logic [DATA_WIDTH-1:0] wr_data,
+    output logic [DATA_WIDTH-1:0] rd_data,
+
+    output logic                  full,
+    output logic                  empty
+);
+
+    // ------------------------------------------------
+    // FIFO Memory
+    // ------------------------------------------------
+
+    logic [DATA_WIDTH-1:0] fifo_mem [0:(1<<ADDR_WIDTH)-1];
+
+
+    // ------------------------------------------------
+    // Write Pointer
+    // ------------------------------------------------
+
+    logic [ADDR_WIDTH:0] wr_ptr_bin;
+    logic [ADDR_WIDTH:0] wr_ptr_gray;
+
+    logic [ADDR_WIDTH:0] wr_ptr_bin_next;
+    logic [ADDR_WIDTH:0] wr_ptr_gray_next;
+
+
+    // ------------------------------------------------
+    // Read Pointer
+    // ------------------------------------------------
+
+    logic [ADDR_WIDTH:0] rd_ptr_bin;
+    logic [ADDR_WIDTH:0] rd_ptr_gray;
+
+    logic [ADDR_WIDTH:0] rd_ptr_bin_next;
+    logic [ADDR_WIDTH:0] rd_ptr_gray_next;
+
+
+    // ------------------------------------------------
+    // Synchronizers
+    // ------------------------------------------------
+
+    logic [ADDR_WIDTH:0] rd_ptr_gray_sync1;
+    logic [ADDR_WIDTH:0] rd_ptr_gray_sync2;
+
+    logic [ADDR_WIDTH:0] wr_ptr_gray_sync1;
+    logic [ADDR_WIDTH:0] wr_ptr_gray_sync2;
+
+
+    // ------------------------------------------------
+    // Next Write Pointer
+    // ------------------------------------------------
+
+    always_comb begin
+
+        if (wr_en && !full)
+            wr_ptr_bin_next = wr_ptr_bin + 1'b1;
+        else
+            wr_ptr_bin_next = wr_ptr_bin;
+
+        wr_ptr_gray_next =
+            (wr_ptr_bin_next >> 1) ^ wr_ptr_bin_next;
+
+    end
+
+
+    // ------------------------------------------------
+    // Next Read Pointer
+    // ------------------------------------------------
+
+    always_comb begin
+
+        if (rd_en && !empty)
+            rd_ptr_bin_next = rd_ptr_bin + 1'b1;
+        else
+            rd_ptr_bin_next = rd_ptr_bin;
+
+        rd_ptr_gray_next =
+            (rd_ptr_bin_next >> 1) ^ rd_ptr_bin_next;
+
+    end
+
+
+    // ------------------------------------------------
+    // Write Pointer Register
+    // ------------------------------------------------
+
+    always_ff @(posedge wr_clk or negedge wr_rst_n) begin
+
+        if (!wr_rst_n) begin
+            wr_ptr_bin  <= '0;
+            wr_ptr_gray <= '0;
+        end
+        else begin
+            wr_ptr_bin  <= wr_ptr_bin_next;
+            wr_ptr_gray <= wr_ptr_gray_next;
+        end
+
+    end
+
+
+    // ------------------------------------------------
+    // Read Pointer Register
+    // ------------------------------------------------
+
+    always_ff @(posedge rd_clk or negedge rd_rst_n) begin
+
+        if (!rd_rst_n) begin
+            rd_ptr_bin  <= '0;
+            rd_ptr_gray <= '0;
+        end
+        else begin
+            rd_ptr_bin  <= rd_ptr_bin_next;
+            rd_ptr_gray <= rd_ptr_gray_next;
+        end
+
+    end
+
+
+    // ------------------------------------------------
+    // Write Data into FIFO
+    // ------------------------------------------------
+
+    always_ff @(posedge wr_clk) begin
+
+        if (wr_en && !full)
+            fifo_mem[wr_ptr_bin[ADDR_WIDTH-1:0]] <= wr_data;
+
+    end
+
+
+    // ------------------------------------------------
+    // Read Data from FIFO
+    // ------------------------------------------------
+
+    always_ff @(posedge rd_clk or negedge rd_rst_n) begin
+
+        if (!rd_rst_n)
+            rd_data <= '0;
+
+        else if (rd_en && !empty)
+            rd_data <= fifo_mem[rd_ptr_bin[ADDR_WIDTH-1:0]];
+
+    end
+
+
+    // ------------------------------------------------
+    // Read Pointer Synchronizer
+    // Read clock domain -> Write clock domain
+    // ------------------------------------------------
+
+    always_ff @(posedge wr_clk or negedge wr_rst_n) begin
+
+        if (!wr_rst_n) begin
+            rd_ptr_gray_sync1 <= '0;
+            rd_ptr_gray_sync2 <= '0;
+        end
+        else begin
+            rd_ptr_gray_sync1 <= rd_ptr_gray;
+            rd_ptr_gray_sync2 <= rd_ptr_gray_sync1;
+        end
+
+    end
+
+
+    // ------------------------------------------------
+    // Write Pointer Synchronizer
+    // Write clock domain -> Read clock domain
+    // ------------------------------------------------
+
+    always_ff @(posedge rd_clk or negedge rd_rst_n) begin
+
+        if (!rd_rst_n) begin
+            wr_ptr_gray_sync1 <= '0;
+            wr_ptr_gray_sync2 <= '0;
+        end
+        else begin
+            wr_ptr_gray_sync1 <= wr_ptr_gray;
+            wr_ptr_gray_sync2 <= wr_ptr_gray_sync1;
+        end
+
+    end
+
+
+    // ------------------------------------------------
+    // FULL Detection
+    // ------------------------------------------------
+
+    logic full_next;
+
+    always_comb begin
+
+        full_next =
+            (wr_ptr_gray_next ==
+             {
+                 ~rd_ptr_gray_sync2[ADDR_WIDTH:ADDR_WIDTH-1],
+                  rd_ptr_gray_sync2[ADDR_WIDTH-2:0]
+             });
+
+    end
+
+
+    always_ff @(posedge wr_clk or negedge wr_rst_n) begin
+
+        if (!wr_rst_n)
+            full <= 1'b0;
+        else
+            full <= full_next;
+
+    end
+
+
+    // ------------------------------------------------
+    // EMPTY Detection
+    // ------------------------------------------------
+
+    logic empty_next;
+
+    always_comb begin
+
+        empty_next =
+            (rd_ptr_gray_next == wr_ptr_gray_sync2);
+
+    end
+
+
+    always_ff @(posedge rd_clk or negedge rd_rst_n) begin
+
+        if (!rd_rst_n)
+            empty <= 1'b1;
+        else
+            empty <= empty_next;
+
+    end
+
+endmodule
+.................................testbench.............................
+
+`include "fifo.sv"
+`timescale 1ns/1ps
+
+module async_fifo_tb;
+
+    // =========================================================
+    // PARAMETERS
+    // =========================================================
+
+    parameter DATA_WIDTH = 8;
+    parameter ADDR_WIDTH = 3;
+
+
+    // =========================================================
+    // TESTBENCH SIGNALS
+    // =========================================================
+
+    logic wr_clk;
+    logic rd_clk;
+
+    logic wr_rst_n;
+    logic rd_rst_n;
+
+    logic wr_en;
+    logic rd_en;
+
+    logic [DATA_WIDTH-1:0] wr_data;
+    logic [DATA_WIDTH-1:0] rd_data;
+
+    logic full;
+    logic empty;
+
+
+    // =========================================================
+    // DUT INSTANTIATION
+    // =========================================================
+
+    async_fifo #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .ADDR_WIDTH(ADDR_WIDTH)
+    ) dut (
+        .wr_clk  (wr_clk),
+        .rd_clk  (rd_clk),
+
+        .wr_rst_n(wr_rst_n),
+        .rd_rst_n(rd_rst_n),
+
+        .wr_en   (wr_en),
+        .rd_en   (rd_en),
+
+        .wr_data (wr_data),
+        .rd_data (rd_data),
+
+        .full    (full),
+        .empty   (empty)
+    );
+
+
+    // =========================================================
+    // WRITE CLOCK
+    // Period = 10 ns
+    // =========================================================
+
+    initial begin
+        wr_clk = 1'b0;
+
+        forever #5 wr_clk = ~wr_clk;
+    end
+
+
+    // =========================================================
+    // READ CLOCK
+    // Period = 14 ns
+    // =========================================================
+
+    initial begin
+        rd_clk = 1'b0;
+
+        forever #7 rd_clk = ~rd_clk;
+    end
+
+
+    // =========================================================
+    // RESET
+    // =========================================================
+
+    initial begin
+
+        wr_rst_n = 1'b0;
+        rd_rst_n = 1'b0;
+
+        wr_en    = 1'b0;
+        rd_en    = 1'b0;
+
+        wr_data  = '0;
+
+        #20;
+
+        wr_rst_n = 1'b1;
+        rd_rst_n = 1'b1;
+
+    end
+
+
+    // =========================================================
+    // WRITE TASK
+    // =========================================================
+
+    task write_data(input logic [DATA_WIDTH-1:0] data);
+
+        begin
+
+            @(posedge wr_clk);
+
+            if (!full) begin
+
+                wr_en   <= 1'b1;
+                wr_data <= data;
+
+                @(posedge wr_clk);
+
+                wr_en <= 1'b0;
+
+                $display("TIME=%0t : WRITE DATA = %0h",
+                         $time, data);
+
+            end
+            else begin
+
+                $display("TIME=%0t : FIFO FULL - WRITE FAILED",
+                         $time);
+
+            end
+
+        end
+
+    endtask
+
+
+    // =========================================================
+    // READ TASK
+    // =========================================================
+
+    task read_data;
+
+        begin
+
+            @(posedge rd_clk);
+
+            if (!empty) begin
+
+                rd_en <= 1'b1;
+
+                @(posedge rd_clk);
+
+                rd_en <= 1'b0;
+
+                $display("TIME=%0t : READ DATA = %0h",
+                         $time, rd_data);
+
+            end
+            else begin
+
+                $display("TIME=%0t : FIFO EMPTY - READ FAILED",
+                         $time);
+
+            end
+
+        end
+
+    endtask
+
+
+    // =========================================================
+    // MAIN TEST
+    // =========================================================
+
+    initial begin
+
+        // Wait for reset
+        #30;
+
+        $display("----------------------------------");
+        $display("STARTING ASYNC FIFO TEST");
+        $display("----------------------------------");
+
+
+        // -----------------------------------------------------
+        // WRITE DATA
+        // -----------------------------------------------------
+
+        write_data(8'hA1);
+        write_data(8'hB2);
+        write_data(8'hC3);
+        write_data(8'hD4);
+
+
+        // Give time for write pointer
+        // to synchronize into read domain
+        #50;
+
+
+        // -----------------------------------------------------
+        // READ DATA
+        // -----------------------------------------------------
+
+        read_data;
+        read_data;
+        read_data;
+        read_data;
+
+
+        // -----------------------------------------------------
+        // WAIT
+        // -----------------------------------------------------
+
+        #100;
+
+
+        $display("----------------------------------");
+        $display("ASYNC FIFO TEST COMPLETED");
+        $display("----------------------------------");
+
+        $finish;
+
+    end
+
+
+    // =========================================================
+    // MONITOR
+    // =========================================================
+
+    initial begin
+
+        $monitor("TIME=%0t | wr_clk=%b rd_clk=%b | wr_en=%b rd_en=%b | wr_data=%h rd_data=%h | FULL=%b EMPTY=%b",
+                 $time,
+                 wr_clk,
+                 rd_clk,
+                 wr_en,
+                 rd_en,
+                 wr_data,
+                 rd_data,
+                 full,
+                 empty);
+
+    end
+
+
+endmodule
