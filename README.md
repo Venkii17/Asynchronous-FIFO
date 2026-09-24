@@ -1,501 +1,1049 @@
-//.............dut.................
+# Asynchronous FIFO Design using SystemVerilog
+
+## 📌 Project Overview
+
+This project implements an **Asynchronous FIFO (First-In-First-Out)** memory buffer using **SystemVerilog**.
+
+An asynchronous FIFO is used to safely transfer data between two different clock domains. Unlike a synchronous FIFO, the **write clock and read clock operate independently**, making asynchronous FIFOs widely used in SoC, FPGA, ASIC, and digital communication designs.
+
+The design uses **Gray-code pointer synchronization** to safely transfer FIFO status information between the write-clock and read-clock domains and to avoid metastability-related issues.
+
+---
+
+## 🎯 Objectives
+
+The main objectives of this project are:
+
+* Design an asynchronous FIFO using SystemVerilog.
+* Support independent write and read clock domains.
+* Safely transfer control information between clock domains.
+* Implement **Gray-code based pointer synchronization**.
+* Generate reliable **FULL** and **EMPTY** status flags.
+* Prevent FIFO overflow and underflow.
+* Verify FIFO functionality using a SystemVerilog testbench.
+* Analyze the design using simulation waveforms.
+
+---
+
+## 🏗️ Architecture
 
+The FIFO consists of two independent clock domains:
 
-module async_fifo #(
-    parameter DATA_WIDTH = 8,
-    parameter ADDR_WIDTH = 3
-)(
-    input  logic                  wr_clk,
-    input  logic                  rd_clk,
+### Write Clock Domain
 
-    input  logic                  wr_rst_n,
-    input  logic                  rd_rst_n,
+The write side contains:
 
-    input  logic                  wr_en,
-    input  logic                  rd_en,
+* Write binary pointer
+* Write Gray-code pointer
+* Write pointer synchronizer
+* Full flag generation
+* Write control logic
 
-    input  logic [DATA_WIDTH-1:0] wr_data,
-    output logic [DATA_WIDTH-1:0] rd_data,
+### Read Clock Domain
 
-    output logic                  full,
-    output logic                  empty
-);
+The read side contains:
 
-    // ------------------------------------------------
-    // FIFO Memory
-    // ------------------------------------------------
+* Read binary pointer
+* Read Gray-code pointer
+* Read pointer synchronizer
+* Empty flag generation
+* Read control logic
 
-    logic [DATA_WIDTH-1:0] fifo_mem [0:(1<<ADDR_WIDTH)-1];
+### Memory
 
+A dual-port style memory array is used to store the FIFO data.
 
-    // ------------------------------------------------
-    // Write Pointer
-    // ------------------------------------------------
+The write side writes data using `wr_clk`, while the read side reads data using `rd_clk`.
 
-    logic [ADDR_WIDTH:0] wr_ptr_bin;
-    logic [ADDR_WIDTH:0] wr_ptr_gray;
+---
 
-    logic [ADDR_WIDTH:0] wr_ptr_bin_next;
-    logic [ADDR_WIDTH:0] wr_ptr_gray_next;
+## 🔄 Block Diagram
 
+```text
+                  ASYNCHRONOUS FIFO
+        ┌─────────────────────────────────────┐
+        │                                     │
+        │          WRITE CLOCK DOMAIN         │
+        │                                     │
+wr_clk ─┤──> Write Pointer ──> Gray Pointer   │
+        │             │                       │
+        │             ▼                       │
+        │       Write Memory                 │
+        │             │                       │
+        │             │                       │
+        │             ▼                       │
+        │       FULL Generation              │
+        │                                     │
+        │              │                      │
+        │              │ Gray Pointer         │
+        │              ▼                      │
+        │       Synchronizer                 │
+        │              │                      │
+        └──────────────┼──────────────────────┘
+                       │
+                       │
+                 FIFO MEMORY
+                       │
+                       │
+        ┌──────────────┼──────────────────────┐
+        │              ▼                      │
+        │       Synchronizer                 │
+        │              │                      │
+        │              ▼                      │
+        │       Empty Generation             │
+        │                                     │
+        │          READ CLOCK DOMAIN          │
+        │                                     │
+rd_clk ─┤──> Read Pointer ──> Gray Pointer    │
+        │             │                       │
+        │             ▼                       │
+        │        Read Data                    │
+        │                                     │
+        └─────────────────────────────────────┘
+```
 
-    // ------------------------------------------------
-    // Read Pointer
-    // ------------------------------------------------
+---
 
-    logic [ADDR_WIDTH:0] rd_ptr_bin;
-    logic [ADDR_WIDTH:0] rd_ptr_gray;
+# 🧠 What is an Asynchronous FIFO?
 
-    logic [ADDR_WIDTH:0] rd_ptr_bin_next;
-    logic [ADDR_WIDTH:0] rd_ptr_gray_next;
+An asynchronous FIFO is a FIFO memory in which:
 
+* Data is written using one clock.
+* Data is read using another clock.
+* The two clocks are independent.
+* The clocks may have different frequencies and phases.
 
-    // ------------------------------------------------
-    // Synchronizers
-    // ------------------------------------------------
+For example:
 
-    logic [ADDR_WIDTH:0] rd_ptr_gray_sync1;
-    logic [ADDR_WIDTH:0] rd_ptr_gray_sync2;
+```text
+Write Clock:  ┌─┐   ┌─┐   ┌─┐   ┌─┐
+              └─┘   └─┘   └─┘   └─┘
 
-    logic [ADDR_WIDTH:0] wr_ptr_gray_sync1;
-    logic [ADDR_WIDTH:0] wr_ptr_gray_sync2;
+Read Clock:   ┌──┐     ┌──┐     ┌──┐
+              └──┘     └──┘     └──┘
+```
 
+The write and read clocks do not need to be synchronized.
 
-    // ------------------------------------------------
-    // Next Write Pointer
-    // ------------------------------------------------
+---
 
-    always_comb begin
+# ⚙️ FIFO Parameters
 
-        if (wr_en && !full)
-            wr_ptr_bin_next = wr_ptr_bin + 1'b1;
-        else
-            wr_ptr_bin_next = wr_ptr_bin;
+The design is parameterized so that FIFO size and data width can be changed easily.
 
-        wr_ptr_gray_next =
-            (wr_ptr_bin_next >> 1) ^ wr_ptr_bin_next;
+Example:
 
-    end
+```systemverilog
+parameter DATA_WIDTH = 8;
+parameter ADDR_WIDTH = 3;
+```
 
+### DATA_WIDTH
 
-    // ------------------------------------------------
-    // Next Read Pointer
-    // ------------------------------------------------
+Defines the number of bits stored in each FIFO location.
 
-    always_comb begin
+```text
+DATA_WIDTH = 8
+```
 
-        if (rd_en && !empty)
-            rd_ptr_bin_next = rd_ptr_bin + 1'b1;
-        else
-            rd_ptr_bin_next = rd_ptr_bin;
+means each FIFO entry stores:
 
-        rd_ptr_gray_next =
-            (rd_ptr_bin_next >> 1) ^ rd_ptr_bin_next;
+```text
+8 bits
+```
 
-    end
+### ADDR_WIDTH
 
+Defines the address width.
 
-    // ------------------------------------------------
-    // Write Pointer Register
-    // ------------------------------------------------
+For:
 
-    always_ff @(posedge wr_clk or negedge wr_rst_n) begin
+```text
+ADDR_WIDTH = 3
+```
 
-        if (!wr_rst_n) begin
-            wr_ptr_bin  <= '0;
-            wr_ptr_gray <= '0;
-        end
-        else begin
-            wr_ptr_bin  <= wr_ptr_bin_next;
-            wr_ptr_gray <= wr_ptr_gray_next;
-        end
+the FIFO contains:
 
-    end
+```text
+2^3 = 8 locations
+```
 
+Therefore:
 
-    // ------------------------------------------------
-    // Read Pointer Register
-    // ------------------------------------------------
+```text
+FIFO DEPTH = 8
+FIFO DATA WIDTH = 8 bits
+```
 
-    always_ff @(posedge rd_clk or negedge rd_rst_n) begin
+---
 
-        if (!rd_rst_n) begin
-            rd_ptr_bin  <= '0;
-            rd_ptr_gray <= '0;
-        end
-        else begin
-            rd_ptr_bin  <= rd_ptr_bin_next;
-            rd_ptr_gray <= rd_ptr_gray_next;
-        end
+# 📐 FIFO Structure
 
-    end
+For:
 
+```text
+DATA_WIDTH = 8
+ADDR_WIDTH = 3
+```
 
-    // ------------------------------------------------
-    // Write Data into FIFO
-    // ------------------------------------------------
+the FIFO contains:
 
-    always_ff @(posedge wr_clk) begin
+```text
+8 locations × 8 bits
+```
 
-        if (wr_en && !full)
-            fifo_mem[wr_ptr_bin[ADDR_WIDTH-1:0]] <= wr_data;
+Memory:
 
-    end
+```text
+Address      Data
+-------      ----
+000          8-bit
+001          8-bit
+010          8-bit
+011          8-bit
+100          8-bit
+101          8-bit
+110          8-bit
+111          8-bit
+```
 
+---
 
-    // ------------------------------------------------
-    // Read Data from FIFO
-    // ------------------------------------------------
+# 🔢 Binary and Gray-Code Pointers
 
-    always_ff @(posedge rd_clk or negedge rd_rst_n) begin
+A major feature of this asynchronous FIFO is the use of **Gray-code pointers**.
 
-        if (!rd_rst_n)
-            rd_data <= '0;
+Binary counters can have multiple bits changing at the same time.
 
-        else if (rd_en && !empty)
-            rd_data <= fifo_mem[rd_ptr_bin[ADDR_WIDTH-1:0]];
+For example:
 
-    end
+```text
+Binary:
 
+0111 → 1000
+```
 
-    // ------------------------------------------------
-    // Read Pointer Synchronizer
-    // Read clock domain -> Write clock domain
-    // ------------------------------------------------
+Multiple bits change simultaneously.
 
-    always_ff @(posedge wr_clk or negedge wr_rst_n) begin
+If the pointer crosses into another clock domain, the receiving clock domain could potentially sample different bits at different times.
 
-        if (!wr_rst_n) begin
-            rd_ptr_gray_sync1 <= '0;
-            rd_ptr_gray_sync2 <= '0;
-        end
-        else begin
-            rd_ptr_gray_sync1 <= rd_ptr_gray;
-            rd_ptr_gray_sync2 <= rd_ptr_gray_sync1;
-        end
+This can cause incorrect pointer information.
 
-    end
+---
 
+# 🟢 Gray Code
 
-    // ------------------------------------------------
-    // Write Pointer Synchronizer
-    // Write clock domain -> Read clock domain
-    // ------------------------------------------------
+In Gray code, only **one bit changes between consecutive values**.
 
-    always_ff @(posedge rd_clk or negedge rd_rst_n) begin
+Example:
 
-        if (!rd_rst_n) begin
-            wr_ptr_gray_sync1 <= '0;
-            wr_ptr_gray_sync2 <= '0;
-        end
-        else begin
-            wr_ptr_gray_sync1 <= wr_ptr_gray;
-            wr_ptr_gray_sync2 <= wr_ptr_gray_sync1;
-        end
+```text
+Binary     Gray
 
-    end
+0000       0000
+0001       0001
+0010       0011
+0011       0010
+0100       0110
+0101       0111
+0110       0101
+0111       0100
+1000       1100
+```
 
+Therefore Gray code is suitable for transferring FIFO pointers between asynchronous clock domains.
 
-    // ------------------------------------------------
-    // FULL Detection
-    // ------------------------------------------------
+---
 
-    logic full_next;
+# 🔄 Binary to Gray Conversion
 
-    always_comb begin
+The Gray-code pointer is generated using:
 
-        full_next =
-            (wr_ptr_gray_next ==
-             {
-                 ~rd_ptr_gray_sync2[ADDR_WIDTH:ADDR_WIDTH-1],
-                  rd_ptr_gray_sync2[ADDR_WIDTH-2:0]
-             });
+```systemverilog
+gray_pointer = (binary_pointer >> 1) ^ binary_pointer;
+```
 
-    end
+For example:
 
+```text
+Binary = 1010
 
-    always_ff @(posedge wr_clk or negedge wr_rst_n) begin
+Shift right:
+0101
 
-        if (!wr_rst_n)
-            full <= 1'b0;
-        else
-            full <= full_next;
+XOR:
 
-    end
+1010
+0101
+----
+1111
 
+Gray = 1111
+```
 
-    // ------------------------------------------------
-    // EMPTY Detection
-    // ------------------------------------------------
+---
 
-    logic empty_next;
+# 🔄 Clock Domain Crossing
 
-    always_comb begin
+The write and read clock domains are asynchronous.
 
-        empty_next =
-            (rd_ptr_gray_next == wr_ptr_gray_sync2);
+Therefore, pointer information cannot be directly passed from one domain to another.
 
-    end
+The design uses **two-stage synchronizers**.
 
+### Write Pointer → Read Clock Domain
 
-    always_ff @(posedge rd_clk or negedge rd_rst_n) begin
+```text
+Write Gray Pointer
+        │
+        ▼
+   Synchronizer 1
+        │
+        ▼
+   Synchronizer 2
+        │
+        ▼
+Read Clock Domain
+```
 
-        if (!rd_rst_n)
-            empty <= 1'b1;
-        else
-            empty <= empty_next;
+### Read Pointer → Write Clock Domain
 
-    end
+```text
+Read Gray Pointer
+        │
+        ▼
+   Synchronizer 1
+        │
+        ▼
+   Synchronizer 2
+        │
+        ▼
+Write Clock Domain
+```
 
-endmodule
+The two-stage synchronizer reduces the probability of metastability propagating into the receiving clock domain.
 
-//..............................testbench..................................
-`include "fifo.sv"
-`timescale 1ns/1ps
+---
 
-module async_fifo_tb;
+# 🚦 FIFO Status Flags
 
-    // =========================================================
-    // PARAMETERS
-    // =========================================================
+The FIFO uses two important status flags.
 
-    parameter DATA_WIDTH = 8;
-    parameter ADDR_WIDTH = 3;
+## FULL
 
+The `full` flag indicates that the FIFO cannot accept another write.
 
-    // =========================================================
-    // TESTBENCH SIGNALS
-    // =========================================================
+```text
+full = 1
+```
 
-    logic wr_clk;
-    logic rd_clk;
+When FIFO is full:
 
-    logic wr_rst_n;
-    logic rd_rst_n;
+```text
+write operation must be stopped
+```
 
-    logic wr_en;
-    logic rd_en;
+The testbench should therefore not perform a valid write when:
 
-    logic [DATA_WIDTH-1:0] wr_data;
-    logic [DATA_WIDTH-1:0] rd_data;
+```systemverilog
+full == 1
+```
 
-    logic full;
-    logic empty;
+---
 
+## EMPTY
 
-    // =========================================================
-    // DUT INSTANTIATION
-    // =========================================================
+The `empty` flag indicates that there is no data available to read.
 
-    async_fifo #(
-        .DATA_WIDTH(DATA_WIDTH),
-        .ADDR_WIDTH(ADDR_WIDTH)
-    ) dut (
-        .wr_clk  (wr_clk),
-        .rd_clk  (rd_clk),
+```text
+empty = 1
+```
 
-        .wr_rst_n(wr_rst_n),
-        .rd_rst_n(rd_rst_n),
+When FIFO is empty:
 
-        .wr_en   (wr_en),
-        .rd_en   (rd_en),
+```text
+read operation must be stopped
+```
 
-        .wr_data (wr_data),
-        .rd_data (rd_data),
+The testbench should therefore not perform a valid read when:
 
-        .full    (full),
-        .empty   (empty)
-    );
+```systemverilog
+empty == 1
+```
 
+---
 
-    // =========================================================
-    // WRITE CLOCK
-    // Period = 10 ns
-    // =========================================================
+# 🧮 FIFO Full Detection
 
-    initial begin
-        wr_clk = 1'b0;
+The write pointer is compared against the synchronized read pointer.
 
-        forever #5 wr_clk = ~wr_clk;
-    end
+The extra pointer bit is important for distinguishing between:
 
+```text
+FIFO EMPTY
+```
 
-    // =========================================================
-    // READ CLOCK
-    // Period = 14 ns
-    // =========================================================
+and
 
-    initial begin
-        rd_clk = 1'b0;
+```text
+FIFO FULL
+```
 
-        forever #7 rd_clk = ~rd_clk;
-    end
+when the memory address bits are equal.
 
+A typical asynchronous FIFO uses the condition:
 
-    // =========================================================
-    // RESET
-    // =========================================================
+```text
+Next Write Gray Pointer
+        ==
+Synchronized Read Gray Pointer
+with inverted MSBs
+```
 
-    initial begin
+This allows the design to detect when the write pointer has completely caught up with the read pointer.
 
-        wr_rst_n = 1'b0;
-        rd_rst_n = 1'b0;
+---
 
-        wr_en    = 1'b0;
-        rd_en    = 1'b0;
+# 🧮 FIFO Empty Detection
 
-        wr_data  = '0;
+The FIFO is empty when:
 
-        #20;
+```text
+Next Read Gray Pointer
+        ==
+Synchronized Write Gray Pointer
+```
 
-        wr_rst_n = 1'b1;
-        rd_rst_n = 1'b1;
+Therefore:
 
-    end
+```systemverilog
+empty <= (rd_gray_next == wr_gray_sync2);
+```
 
+Conceptually:
 
-    // =========================================================
-    // WRITE TASK
-    // =========================================================
+```text
+Read Pointer
+     │
+     ▼
+Synchronized Write Pointer
+     │
+     ▼
+     Same?
+     │
+    YES
+     │
+     ▼
+   EMPTY
+```
 
-    task write_data(input logic [DATA_WIDTH-1:0] data);
+---
 
-        begin
+# 📝 Write Operation
 
-            @(posedge wr_clk);
+A write operation occurs when:
 
-            if (!full) begin
+```text
+wr_en = 1
+```
 
-                wr_en   <= 1'b1;
-                wr_data <= data;
+and
 
-                @(posedge wr_clk);
+```text
+full = 0
+```
 
-                wr_en <= 1'b0;
+The sequence is:
 
-                $display("TIME=%0t : WRITE DATA = %0h",
-                         $time, data);
+```text
+1. Check FULL
+2. Write data into memory
+3. Increment write binary pointer
+4. Convert binary pointer to Gray code
+5. Synchronize pointer information
+6. Update FULL status
+```
 
-            end
-            else begin
+Example:
 
-                $display("TIME=%0t : FIFO FULL - WRITE FAILED",
-                         $time);
+```systemverilog
+if (wr_en && !full) begin
+    mem[wr_addr] <= wr_data;
+end
+```
 
-            end
+---
 
-        end
+# 📖 Read Operation
 
-    endtask
+A read operation occurs when:
 
+```text
+rd_en = 1
+```
 
-    // =========================================================
-    // READ TASK
-    // =========================================================
+and
 
-    task read_data;
+```text
+empty = 0
+```
 
-        begin
+The sequence is:
 
-            @(posedge rd_clk);
+```text
+1. Check EMPTY
+2. Read data from memory
+3. Increment read binary pointer
+4. Convert binary pointer to Gray code
+5. Synchronize pointer information
+6. Update EMPTY status
+```
 
-            if (!empty) begin
+Example:
 
-                rd_en <= 1'b1;
+```systemverilog
+if (rd_en && !empty) begin
+    rd_data <= mem[rd_addr];
+end
+```
 
-                @(posedge rd_clk);
+---
 
-                rd_en <= 1'b0;
+# 🔁 FIFO Data Flow
 
-                $display("TIME=%0t : READ DATA = %0h",
-                         $time, rd_data);
+```text
+                 WRITE DOMAIN
 
-            end
-            else begin
+wr_data
+   │
+   ▼
+┌─────────┐
+│ Memory  │
+└─────────┘
+   │
+   │
+   ▼
+FIFO STORAGE
+   │
+   │
+   ▼
+┌─────────┐
+│ Memory  │
+└─────────┘
+   │
+   ▼
+rd_data
 
-                $display("TIME=%0t : FIFO EMPTY - READ FAILED",
-                         $time);
+                 READ DOMAIN
+```
 
-            end
+Data follows:
 
-        end
+```text
+wr_data
+   ↓
+FIFO Memory
+   ↓
+rd_data
+```
 
-    endtask
+---
 
+# 🧩 Project Files
 
-    // =========================================================
-    // MAIN TEST
-    // =========================================================
+Recommended repository structure:
 
-    initial begin
+```text
+Asynchronous-FIFO/
+│
+├── rtl/
+│   └── async_fifo.sv
+│
+├── tb/
+│   └── async_fifo_tb.sv
+│
+├── simulation/
+│   └── waveforms/
+│
+├── docs/
+│   └── architecture.png
+│
+├── README.md
+│
+└── LICENSE
+```
 
-        // Wait for reset
-        #30;
+---
 
-        $display("----------------------------------");
-        $display("STARTING ASYNC FIFO TEST");
-        $display("----------------------------------");
+# 💻 RTL Design
 
+The main RTL module contains:
 
-        // -----------------------------------------------------
-        // WRITE DATA
-        // -----------------------------------------------------
+```text
+async_fifo
+```
 
-        write_data(8'hA1);
-        write_data(8'hB2);
-        write_data(8'hC3);
-        write_data(8'hD4);
+with parameters:
 
+```systemverilog
+parameter DATA_WIDTH = 8;
+parameter ADDR_WIDTH = 3;
+```
 
-        // Give time for write pointer
-        // to synchronize into read domain
-        #50;
+Main ports:
 
+```text
+wr_clk
+rd_clk
 
-        // -----------------------------------------------------
-        // READ DATA
-        // -----------------------------------------------------
+wr_rst_n
+rd_rst_n
 
-        read_data;
-        read_data;
-        read_data;
-        read_data;
+wr_en
+rd_en
 
+wr_data
+rd_data
 
-        // -----------------------------------------------------
-        // WAIT
-        // -----------------------------------------------------
+full
+empty
+```
 
-        #100;
+---
 
+# 🧪 Verification
 
-        $display("----------------------------------");
-        $display("ASYNC FIFO TEST COMPLETED");
-        $display("----------------------------------");
+A SystemVerilog testbench is used to verify the FIFO.
 
-        $finish;
+The testbench generates:
 
-    end
+* Independent write clock
+* Independent read clock
+* Reset
+* Write transactions
+* Read transactions
+* FIFO full condition
+* FIFO empty condition
+* Data integrity checking
 
+---
 
-    // =========================================================
-    // MONITOR
-    // =========================================================
+# ⏱️ Independent Clock Generation
 
-    initial begin
+The testbench uses different clock periods.
 
-        $monitor("TIME=%0t | wr_clk=%b rd_clk=%b | wr_en=%b rd_en=%b | wr_data=%h rd_data=%h | FULL=%b EMPTY=%b",
-                 $time,
-                 wr_clk,
-                 rd_clk,
-                 wr_en,
-                 rd_en,
-                 wr_data,
-                 rd_data,
-                 full,
-                 empty);
+Example:
 
-    end
+```systemverilog
+always #5 wr_clk = ~wr_clk;
+always #7 rd_clk = ~rd_clk;
+```
 
+Therefore:
 
-endmodule
+```text
+Write Clock = 10 time units
+Read Clock  = 14 time units
+```
+
+This helps verify the FIFO under asynchronous clock conditions.
+
+---
+
+# 🔄 Test Sequence
+
+The testbench performs operations such as:
+
+### 1. Reset
+
+```text
+Apply reset
+      ↓
+FIFO initialized
+      ↓
+EMPTY = 1
+FULL  = 0
+```
+
+### 2. Write Data
+
+```text
+Write 10
+Write 20
+Write 30
+Write 40
+```
+
+### 3. Read Data
+
+```text
+Read 10
+Read 20
+Read 30
+Read 40
+```
+
+### 4. Fill FIFO
+
+The testbench writes enough data to make:
+
+```text
+FULL = 1
+```
+
+### 5. Empty FIFO
+
+The testbench reads all available data until:
+
+```text
+EMPTY = 1
+```
+
+### 6. Simultaneous Read/Write
+
+Read and write operations are performed using independent clocks.
+
+---
+
+# ✅ Verification Checks
+
+The testbench verifies:
+
+| Test                        | Expected Result       |
+| --------------------------- | --------------------- |
+| Reset                       | FIFO becomes empty    |
+| Write when not full         | Data stored           |
+| Read when not empty         | Correct data received |
+| Write when full             | Write prevented       |
+| Read when empty             | Read prevented        |
+| Multiple writes             | Data order maintained |
+| Multiple reads              | FIFO order maintained |
+| Different clock frequencies | Correct operation     |
+| Simultaneous read/write     | Correct operation     |
+| Pointer synchronization     | Correct status flags  |
+
+---
+
+# 📊 FIFO Principle
+
+FIFO follows:
+
+```text
+First In → First Out
+```
+
+For example:
+
+```text
+Write:
+
+10 → 20 → 30 → 40
+
+Read:
+
+10 → 20 → 30 → 40
+```
+
+The first data written must always be the first data read.
+
+---
+
+# 🛡️ Overflow Protection
+
+Overflow occurs when attempting to write into a full FIFO.
+
+The design prevents this by checking:
+
+```systemverilog
+if (!full)
+```
+
+before accepting a write.
+
+Therefore:
+
+```text
+FULL = 1
+      ↓
+Write disabled
+```
+
+---
+
+# 🛡️ Underflow Protection
+
+Underflow occurs when attempting to read from an empty FIFO.
+
+The design prevents this by checking:
+
+```systemverilog
+if (!empty)
+```
+
+before accepting a read.
+
+Therefore:
+
+```text
+EMPTY = 1
+       ↓
+Read disabled
+```
+
+---
+
+# ⚠️ Metastability Consideration
+
+Because the FIFO operates across asynchronous clock domains, metastability is an important design consideration.
+
+The design uses:
+
+```text
+Gray-coded pointers
++
+Two-stage synchronizers
+```
+
+to safely transfer pointer information between clock domains.
+
+```text
+Clock Domain A
+      │
+      ▼
+Gray Pointer
+      │
+      ▼
+Synchronizer FF 1
+      │
+      ▼
+Synchronizer FF 2
+      │
+      ▼
+Clock Domain B
+```
+
+This is a standard technique for asynchronous FIFO clock-domain crossing.
+
+---
+
+# 🔬 Simulation
+
+The design can be simulated using tools such as:
+
+* QuestaSim / ModelSim
+* Vivado Simulator
+* Xilinx Vivado
+* Icarus Verilog
+* Verilator
+
+For QuestaSim/ModelSim, a typical flow is:
+
+```text
+vlib work
+vlog rtl/async_fifo.sv
+vlog tb/async_fifo_tb.sv
+vsim work.async_fifo_tb
+add wave *
+run -all
+```
+
+---
+
+# 📈 Expected Simulation
+
+During simulation, the waveform should show:
+
+```text
+wr_clk
+rd_clk
+wr_en
+rd_en
+wr_data
+rd_data
+full
+empty
+```
+
+Initially:
+
+```text
+empty = 1
+full  = 0
+```
+
+After valid writes:
+
+```text
+empty → 0
+```
+
+When the FIFO becomes completely full:
+
+```text
+full → 1
+```
+
+After reading all stored data:
+
+```text
+empty → 1
+```
+
+---
+
+# 🧠 Key Concepts Learned
+
+Through this project, the following concepts are demonstrated:
+
+### SystemVerilog
+
+* `logic`
+* Parameters
+* Sequential logic
+* Combinational logic
+* `always_ff`
+* `always_comb`
+* Non-blocking assignments
+* Testbench development
+
+### Digital Design
+
+* FIFO architecture
+* Circular buffers
+* Binary counters
+* Pointer generation
+* Memory addressing
+* Status flag generation
+
+### CDC
+
+* Clock Domain Crossing
+* Metastability
+* Synchronizers
+* Two-flop synchronization
+* Gray-code conversion
+* Safe pointer transfer
+
+### Verification
+
+* Testbench architecture
+* Multiple clock generation
+* Reset verification
+* Data integrity checking
+* Boundary-condition testing
+* Waveform analysis
+
+---
+
+# 🎓 Interview Questions Related to This Project
+
+Some questions that can be asked in an interview are:
+
+### 1. What is an asynchronous FIFO?
+
+An asynchronous FIFO is a FIFO in which the read and write operations use independent clock domains.
+
+### 2. Why is Gray code used?
+
+Gray code ensures that only one bit changes between consecutive pointer values, making pointer synchronization safer across asynchronous clock domains.
+
+### 3. Why are two flip-flops used for synchronization?
+
+Two flip-flop synchronizers reduce the probability that metastability from the source clock domain propagates into the destination clock domain.
+
+### 4. How is FIFO full detected?
+
+FIFO full is detected by comparing the next write Gray pointer with the appropriately modified synchronized read Gray pointer.
+
+### 5. How is FIFO empty detected?
+
+FIFO empty is detected when the next read Gray pointer equals the synchronized write Gray pointer.
+
+### 6. Why are extra pointer bits required?
+
+The additional pointer bit helps distinguish between the FIFO being completely empty and completely full when the address portions of the pointers are equal.
+
+### 7. What happens if we directly synchronize a binary pointer?
+
+Multiple bits can change simultaneously in a binary counter. The receiving clock domain may therefore observe an inconsistent value.
+
+### 8. What is metastability?
+
+Metastability is a temporary condition where a flip-flop output may not resolve quickly to a valid logic `0` or `1` when its setup or hold timing requirements are violated.
+
+### 9. What happens when writing to a full FIFO?
+
+The write operation must be blocked.
+
+### 10. What happens when reading from an empty FIFO?
+
+The read operation must be blocked.
+
+---
+
+# 🚀 Future Improvements
+
+The project can be extended with:
+
+* Parameterized FIFO depth and data width
+* Almost-full flag
+* Almost-empty flag
+* Programmable threshold levels
+* FIFO occupancy counter
+* Assertions
+* Functional coverage
+* Code coverage
+* Randomized verification
+* SystemVerilog interface
+* SystemVerilog assertions
+* UVM-based verification
+* Formal verification
+
+---
+
+# 📚 References
+
+Useful references for understanding asynchronous FIFO design include:
+
+* Clifford E. Cummings, *Simulation and Synthesis Techniques for Asynchronous FIFO Design*
+* IEEE SystemVerilog language concepts
+* AMBA/SoC clock-domain crossing design concepts
+* FPGA/ASIC FIFO implementation guidelines
+
+---
+
+# 👨‍💻 Author
+
+**Venkatesh R S**
+
+Electronics & Communication Engineering
+VLSI / Embedded Systems Enthusiast
+
+---
+
+# ⭐ Project Highlights
+
+```text
+✔ Asynchronous FIFO
+✔ Independent Read/Write Clocks
+✔ SystemVerilog RTL
+✔ Binary Pointers
+✔ Gray-Code Pointers
+✔ Two-Stage Synchronizers
+✔ FULL Detection
+✔ EMPTY Detection
+✔ CDC Design
+✔ SystemVerilog Testbench
+✔ QuestaSim / ModelSim Simulation
+✔ Data Integrity Verification
+```
+
+---
+
+## 📌 Conclusion
+
+This project demonstrates the RTL design and verification of an **Asynchronous FIFO using SystemVerilog**.
+
+The design addresses the key challenges of transferring data between independent clock domains by using **Gray-coded read/write pointers and two-stage synchronizers**. The FIFO also provides reliable full and empty detection while preventing overflow and underflow.
+
+The project provides practical experience in **RTL design, SystemVerilog, clock-domain crossing (CDC), FIFO architecture, synchronization, and functional verification**, which are important concepts for **VLSI Design, RTL Design, and Design Verification** roles.
