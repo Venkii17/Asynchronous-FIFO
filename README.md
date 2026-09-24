@@ -1,4 +1,6 @@
 //.............dut.................
+
+
 module async_fifo #(
     parameter DATA_WIDTH = 8,
     parameter ADDR_WIDTH = 3
