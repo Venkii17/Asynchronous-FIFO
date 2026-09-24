@@ -563,7 +563,8 @@ Asynchronous-FIFO/
 │   └── async_fifo_tb.sv
 │
 ├── simulation/
-│   └── waveforms/
+│   └── <img width="1280" height="714" alt="waveform" src="https://github.com/user-attachments/assets/ae5a9ded-674b-4cef-808e-b885b94ca710" />
+
 │
 ├── docs/
 │   └── architecture.png
